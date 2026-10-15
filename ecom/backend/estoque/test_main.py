@@ -91,3 +91,73 @@ def test_docs_resolve_o_spec_por_url_relativa():
     html = client.get("/docs").text
     assert html.index('"url": "openapi.json"') > html.index("url: '/openapi.json'")
     assert client.get("/openapi.json").json()["openapi"].startswith("3.")
+
+# ── Escrita pela tela de Estoque (admin) ─────────────────────────────────────
+
+from jose import jwt
+from main import ALGORITHM, SECRET_KEY
+
+def cabecalho():
+    token = jwt.encode({"sub": "zz-teste", "role": "ADMIN"}, SECRET_KEY, algorithm=ALGORITHM)
+    return {"Authorization": f"Bearer {token}"}
+
+def total_de_posicoes(db):
+    return db.query(Estoque).count()
+
+def test_editar_pelo_id_da_linha_nao_cria_posicao_fantasma(posicoes):
+    """O react-admin manda o id da LINHA no PUT, não o produto_id.
+
+    Procurar só por produto_id criava uma posição nova cujo produto_id era o id
+    da linha editada — sem produto correspondente, a tela mostrava uma linha sem
+    nome e a quantidade original ficava intacta.
+    """
+    db = SessionLocal()
+    antes = total_de_posicoes(db)
+    alvo = db.query(Estoque).filter(Estoque.id == posicoes[0]).first()
+    produto_original = alvo.produto_id
+    db.close()
+
+    resp = client.put(f"/v1/estoque/{posicoes[0]}", json={"quantidade": 30}, headers=cabecalho())
+    assert resp.status_code == 200
+    assert resp.json() == {"id": posicoes[0], "produto_id": produto_original, "quantidade": 30}
+
+    db = SessionLocal()
+    assert total_de_posicoes(db) == antes          # nada de linha nova
+    assert db.query(Estoque).filter(Estoque.id == posicoes[0]).first().quantidade == 30
+    db.close()
+
+def test_editar_pelo_produto_id_continua_valendo(posicoes):
+    """É assim que o seed.sh e os outros serviços carregam estoque."""
+    resp = client.put(f"/v1/estoque/{PREFIXO}-b", json={"quantidade": 77}, headers=cabecalho())
+    assert resp.status_code == 200
+    assert resp.json()["quantidade"] == 77
+    assert resp.json()["produto_id"] == f"{PREFIXO}-b"
+
+def test_put_em_produto_sem_posicao_cria(posicoes):
+    novo = f"{PREFIXO}-novo"
+    resp = client.put(f"/v1/estoque/{novo}", json={"quantidade": 12}, headers=cabecalho())
+    assert resp.status_code == 200
+    assert resp.json()["produto_id"] == novo and resp.json()["quantidade"] == 12
+    db = SessionLocal()
+    db.query(Estoque).filter(Estoque.produto_id == novo).delete(synchronize_session=False)
+    db.commit(); db.close()
+
+def test_criar_posicao_pela_tela(posicoes):
+    novo = f"{PREFIXO}-create"
+    resp = client.post("/v1/estoque", json={"produto_id": novo, "quantidade": 9}, headers=cabecalho())
+    assert resp.status_code == 201
+    assert resp.json()["produto_id"] == novo and resp.json()["id"]
+    # Segunda vez: o produto já tem posição
+    assert client.post("/v1/estoque", json={"produto_id": novo, "quantidade": 1},
+                       headers=cabecalho()).status_code == 409
+    db = SessionLocal()
+    db.query(Estoque).filter(Estoque.produto_id == novo).delete(synchronize_session=False)
+    db.commit(); db.close()
+
+def test_criar_sem_token():
+    assert client.post("/v1/estoque", json={"produto_id": "x", "quantidade": 1}).status_code == 401
+
+def test_repontar_para_produto_ja_com_posicao_e_recusado(posicoes):
+    resp = client.put(f"/v1/estoque/{posicoes[0]}",
+                      json={"quantidade": 1, "produto_id": f"{PREFIXO}-b"}, headers=cabecalho())
+    assert resp.status_code == 409

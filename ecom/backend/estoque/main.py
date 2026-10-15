@@ -46,6 +46,11 @@ class ReservaCreate(BaseModel):
 
 class EstoqueUpdate(BaseModel):
     quantidade: int
+    produto_id: Optional[str] = None   # permite repontar a posição para outro produto
+
+class EstoqueCreate(BaseModel):
+    produto_id: str
+    quantidade: int = 0
 
 def exigir_auth(request: Request):
     auth = request.headers.get("authorization", "")
@@ -71,6 +76,9 @@ def get_db():
         yield db
     finally:
         db.close()
+
+def serializar(e: Estoque) -> dict:
+    return {"id": str(e.id), "produto_id": str(e.produto_id), "quantidade": e.quantidade}
 
 @app.get("/status", tags=["health"])
 def status():
@@ -116,18 +124,46 @@ def liberar_reserva(reserva_id: str, request: Request, db: Session = Depends(get
     db.commit()
     return {"id": reserva_id, "status": "LIBERADA"}
 
-@app.put("/v1/estoque/{produto_id}", tags=["estoque"])
-def atualizar(produto_id: str, body: EstoqueUpdate, request: Request, db: Session = Depends(get_db)):
-    """Atualiza quantidade em estoque. Cria registro se não existir."""
+@app.post("/v1/estoque", status_code=201, tags=["estoque"])
+def criar(body: EstoqueCreate, request: Request, db: Session = Depends(get_db)):
+    """Cria a posição de estoque de um produto (o Create da tela de Estoque)."""
     exigir_auth(request)
-    e = db.query(Estoque).filter(Estoque.produto_id == produto_id).first()
+    if db.query(Estoque).filter(Estoque.produto_id == body.produto_id).first():
+        raise HTTPException(status_code=409, detail="Produto já tem posição de estoque")
+    e = Estoque(produto_id=body.produto_id, quantidade=body.quantidade)
+    db.add(e)
+    db.commit()
+    db.refresh(e)
+    return serializar(e)
+
+@app.put("/v1/estoque/{identificador}", tags=["estoque"])
+def atualizar(identificador: str, body: EstoqueUpdate, request: Request, db: Session = Depends(get_db)):
+    """Atualiza a quantidade. O identificador pode ser o id da posição ou o produto_id.
+
+    O admin edita pelo id da linha (é o `id` do recurso no react-admin), enquanto
+    o seed e os outros serviços conhecem o produto. Procurar só por produto_id
+    fazia a edição pelo admin criar uma posição nova, com produto_id apontando
+    para o id da linha editada — linhas fantasma, sem produto.
+
+    Sem nenhuma das duas correspondências, cria a posição do produto informado:
+    é assim que o seed carrega estoque de produto recém-criado.
+    """
+    exigir_auth(request)
+    e = (db.query(Estoque).filter(Estoque.id == identificador).first()
+         or db.query(Estoque).filter(Estoque.produto_id == identificador).first())
     if e:
         e.quantidade = body.quantidade
+        if body.produto_id and body.produto_id != e.produto_id:
+            ocupada = db.query(Estoque).filter(Estoque.produto_id == body.produto_id).first()
+            if ocupada:
+                raise HTTPException(status_code=409, detail="Produto já tem posição de estoque")
+            e.produto_id = body.produto_id
     else:
-        e = Estoque(produto_id=produto_id, quantidade=body.quantidade)
+        e = Estoque(produto_id=body.produto_id or identificador, quantidade=body.quantidade)
         db.add(e)
     db.commit()
-    return {"produto_id": produto_id, "quantidade": body.quantidade}
+    db.refresh(e)
+    return serializar(e)
 
 @app.get("/v1/estoque/{estoque_id}", tags=["estoque"])
 def obter(estoque_id: str, db: Session = Depends(get_db)):
@@ -135,9 +171,6 @@ def obter(estoque_id: str, db: Session = Depends(get_db)):
     if not e:
         raise HTTPException(status_code=404, detail="Item de estoque não encontrado")
     return serializar(e)
-
-def serializar(e: Estoque) -> dict:
-    return {"id": str(e.id), "produto_id": str(e.produto_id), "quantidade": e.quantidade}
 
 @app.get("/v1/estoque", tags=["estoque"])
 def listar(request: Request, db: Session = Depends(get_db)):
