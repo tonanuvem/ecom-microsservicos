@@ -1,0 +1,33 @@
+# ── Dependências e artefatos de build ───────────────────────────────────────
+node_modules/
+dist/
+build/
+target/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Bancos SQLite usados pelos testes — o schema é recriado sozinho
+*.db
+
+# ── Segredos e credenciais: nada disso entra no repositório ─────────────────
+# Chave SSH do lab AWS
+labsuserpem/
+*.pem
+# Certificado self-signed do nginx — gerado no build da imagem
+ecom/frontend/ssl/
+*.key
+*.crt
+# Variáveis de ambiente locais (há .env.example versionado)
+.env
+.env.*
+!.env.example
+
+# ── Sistema operacional e editores ──────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/

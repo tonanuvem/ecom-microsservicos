@@ -1,0 +1,224 @@
+# docker-compose.yml — Solução E-Commerce (singlenode)
+# Executa todos os microsserviços e seus bancos de dados
+version: "3.9"
+
+services:
+
+  # ── Bancos de dados ──────────────────────────────────────────────────────
+
+  db-usuarios:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: usuarios
+      POSTGRES_USER: ecom
+      POSTGRES_PASSWORD: ecom123
+    volumes:
+      - pgdata-usuarios:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ecom -d usuarios"]
+      interval: 5s
+      retries: 10
+
+  db-produtos:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: produtos
+      POSTGRES_USER: ecom
+      POSTGRES_PASSWORD: ecom123
+    volumes:
+      - pgdata-produtos:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ecom -d produtos"]
+      interval: 5s
+      retries: 10
+
+  db-estoque:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: estoque
+      POSTGRES_USER: ecom
+      POSTGRES_PASSWORD: ecom123
+    volumes:
+      - pgdata-estoque:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ecom -d estoque"]
+      interval: 5s
+      retries: 10
+
+  db-pedidos:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: pedidos
+      POSTGRES_USER: ecom
+      POSTGRES_PASSWORD: ecom123
+    volumes:
+      - pgdata-pedidos:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ecom -d pedidos"]
+      interval: 5s
+      retries: 10
+
+  db-pagamentos:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: pagamentos
+      POSTGRES_USER: ecom
+      POSTGRES_PASSWORD: ecom123
+    volumes:
+      - pgdata-pagamentos:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ecom -d pagamentos"]
+      interval: 5s
+      retries: 10
+
+  db-notificacoes:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: notificacoes
+      POSTGRES_USER: ecom
+      POSTGRES_PASSWORD: ecom123
+    volumes:
+      - pgdata-notificacoes:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ecom -d notificacoes"]
+      interval: 5s
+      retries: 10
+
+  # ── Microsserviços ───────────────────────────────────────────────────────
+
+  svc-usuarios:
+    build: ../../../backend/usuarios
+    ports:
+      - "8001:8001"
+    environment:
+      DATABASE_URL: postgresql://ecom:ecom123@db-usuarios:5432/usuarios
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-change-in-prod}
+      TOKEN_EXPIRE_MINUTES: "60"
+      SERVICE_NAME: usuarios
+      # Notificações é best-effort: sem a variável, nada é publicado; se o
+      # serviço estiver fora, a operação de negócio segue normal.
+      NOTIFICACOES_URL: http://svc-notificacoes:8006
+    depends_on:
+      db-usuarios:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/status')"]
+      interval: 10s
+      retries: 5
+
+  svc-produtos:
+    build: ../../../backend/produtos
+    ports:
+      - "8002:8002"
+    environment:
+      DATABASE_URL: postgresql://ecom:ecom123@db-produtos:5432/produtos
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-change-in-prod}
+    depends_on:
+      db-produtos:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/status')"]
+      interval: 10s
+      retries: 5
+
+  svc-estoque:
+    build: ../../../backend/estoque
+    ports:
+      - "8003:8003"
+    environment:
+      DATABASE_URL: postgresql://ecom:ecom123@db-estoque:5432/estoque
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-change-in-prod}
+      RESERVA_TTL_MINUTOS: "15"
+    depends_on:
+      db-estoque:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8003/status')"]
+      interval: 10s
+      retries: 5
+
+  svc-pedidos:
+    build: ../../../backend/pedidos
+    ports:
+      - "8004:8004"
+    environment:
+      DATABASE_URL: postgresql://ecom:ecom123@db-pedidos:5432/pedidos
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-change-in-prod}
+      ESTOQUE_URL: http://svc-estoque:8003
+      SERVICE_NAME: pedidos
+      USUARIOS_URL: http://svc-usuarios:8001
+      NOTIFICACOES_URL: http://svc-notificacoes:8006
+    depends_on:
+      db-pedidos:
+        condition: service_healthy
+      svc-estoque:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8004/status')"]
+      interval: 10s
+      retries: 5
+
+  svc-pagamentos:
+    build: ../../../backend/pagamentos
+    ports:
+      - "8005:8005"
+    environment:
+      DATABASE_URL: postgresql://ecom:ecom123@db-pagamentos:5432/pagamentos
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-change-in-prod}
+      SERVICE_NAME: pagamentos
+      PEDIDOS_URL: http://svc-pedidos:8004
+      USUARIOS_URL: http://svc-usuarios:8001
+      NOTIFICACOES_URL: http://svc-notificacoes:8006
+    depends_on:
+      db-pagamentos:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8005/status')"]
+      interval: 10s
+      retries: 5
+
+  svc-notificacoes:
+    build: ../../../backend/notificacoes
+    ports:
+      - "8006:8006"
+    environment:
+      DATABASE_URL: postgresql://ecom:ecom123@db-notificacoes:5432/notificacoes
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-change-in-prod}
+    depends_on:
+      db-notificacoes:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8006/status')"]
+      interval: 10s
+      retries: 5
+
+  # ── Frontend ─────────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ../../../frontend
+      args:
+        # URLs dos microsserviços acessíveis pelo BROWSER (host público ou IP)
+        VITE_API_USUARIOS: ${VITE_API_USUARIOS:-http://localhost:8001}
+        VITE_API_PRODUTOS: ${VITE_API_PRODUTOS:-http://localhost:8002}
+        VITE_API_ESTOQUE: ${VITE_API_ESTOQUE:-http://localhost:8003}
+        VITE_API_PEDIDOS: ${VITE_API_PEDIDOS:-http://localhost:8004}
+        VITE_API_PAGAMENTOS: ${VITE_API_PAGAMENTOS:-http://localhost:8005}
+        VITE_API_NOTIFICACOES: ${VITE_API_NOTIFICACOES:-http://localhost:8006}
+    ports:
+      - "3000:80"
+      - "3443:443"
+    depends_on:
+      - svc-usuarios
+      - svc-produtos
+      - svc-estoque
+      - svc-pedidos
+      - svc-pagamentos
+      - svc-notificacoes
+
+volumes:
+  pgdata-usuarios:
+  pgdata-produtos:
+  pgdata-estoque:
+  pgdata-pedidos:
+  pgdata-pagamentos:
+  pgdata-notificacoes:
