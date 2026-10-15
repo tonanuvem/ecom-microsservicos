@@ -1,9 +1,29 @@
+// Pagamentos é uma tela de leitura — de propósito.
+//
+// Um pagamento não nasce no admin: nasce no provedor. O fluxo é
+// POST /v1/pagamentos/sessao (cria a cobrança PENDENTE do pedido) e depois
+// POST /v1/pagamentos/webhook, que o provedor chama com o resultado e que é o
+// único lugar que aprova/recusa, grava o valor cobrado e publica a notificação
+// do cliente (PEDIDO_CONFIRMADO / PAGAMENTO_RECUSADO).
+//
+// Esse registro é idempotente por construção: `pedido_id` e `idempotency_key`
+// são únicos, um pedido tem no máximo um pagamento. Um Create no admin
+// inventaria uma cobrança que o provedor não reconhece (e esbarraria na
+// unicidade), e um Edit deixaria o status do pagamento divergir do pedido sem
+// passar pelo webhook — sem notificação e sem referência externa. Por isso o
+// serviço não expõe POST /v1/pagamentos nem PUT /v1/pagamentos/{id}: as telas
+// de escrita que existiam aqui batiam em 405 depois de preencher o formulário.
+// Para simular pagamento em aula, use o webhook (Swagger do serviço ou
+// scripts/seed.sh).
 import PaymentIcon from '@mui/icons-material/Payment'
+import ReceiptLongIcon from '@mui/icons-material/ReceiptLong'
+import Box from '@mui/material/Box'
+import Button from '@mui/material/Button'
 import Chip from '@mui/material/Chip'
 import Typography from '@mui/material/Typography'
 import {
-  Create, Datagrid, Edit, List,
-  NumberInput, SimpleForm, TextField, TextInput, useRecordContext,
+  Datagrid, List, Show, SimpleShowLayout, TextField, TopToolbar,
+  useRecordContext, useRedirect,
 } from 'react-admin'
 
 export const PagamentoIcon = PaymentIcon
@@ -28,35 +48,51 @@ const ValorField = () => {
 
 export const PagamentoList = () => (
   <List sort={{ field: 'criado_em', order: 'DESC' }} perPage={25}>
-    <Datagrid rowClick="edit" bulkActionButtons={false}>
+    <Datagrid rowClick="show" bulkActionButtons={false}>
       <TextField source="pedido_id" label="Pedido" />
-      <StatusChip label="Status" />
-      <ValorField label="Valor" />
-      <TextField source="provedor" label="Provedor" />
+      <StatusChip label="Status" source="status" />
+      <ValorField label="Valor" source="valor" />
+      {/* referencia_ext é o identificador da cobrança no provedor — fica vazio
+          enquanto o webhook não chegou. O serviço não tem campo `provedor`. */}
+      <TextField source="referencia_ext" label="Referência externa" emptyText="—" />
       <TextField source="criado_em" label="Criado em" />
     </Datagrid>
   </List>
 )
 
-export const PagamentoCreate = () => (
-  <Create redirect="list">
-    <SimpleForm>
-      <TextInput source="pedido_id" label="ID do Pedido" required fullWidth />
-      <NumberInput source="valor" label="Valor (R$)" required min={0} />
-      <TextInput source="provedor" label="Provedor de Pagamento" />
-      <TextInput source="idempotency_key" label="Chave de Idempotência" fullWidth />
-    </SimpleForm>
-  </Create>
-)
+/** Atalho para o pedido cobrado: é por ele que se chega ao cliente e aos itens. */
+const AcoesPagamento = () => {
+  const record   = useRecordContext()
+  const redirect = useRedirect()
+  if (!record) return null
+  return (
+    <TopToolbar>
+      <Button
+        size="small"
+        startIcon={<ReceiptLongIcon />}
+        onClick={() => redirect('show', 'pedidos', record.pedido_id)}
+      >
+        Abrir pedido
+      </Button>
+    </TopToolbar>
+  )
+}
 
-export const PagamentoEdit = () => (
-  <Edit redirect="list">
-    <SimpleForm>
-      <TextInput source="pedido_id" label="ID do Pedido" fullWidth />
-      <NumberInput source="valor" label="Valor (R$)" min={0} />
-      <TextInput source="status" label="Status" />
-      <TextInput source="provedor" label="Provedor" />
-      <TextInput source="referencia_ext" label="Referência Externa" fullWidth />
-    </SimpleForm>
-  </Edit>
+export const PagamentoShow = () => (
+  <Show actions={<AcoesPagamento />}>
+    <SimpleShowLayout>
+      <TextField source="id" label="ID do pagamento" />
+      <TextField source="pedido_id" label="Pedido" />
+      <StatusChip label="Status" />
+      <ValorField label="Valor cobrado" />
+      <TextField source="referencia_ext" label="Referência no provedor" emptyText="—" />
+      <TextField source="criado_em" label="Criado em" />
+      <Box sx={{ pt: 1 }}>
+        <Typography variant="caption" color="text.secondary">
+          O resultado do pagamento chega pelo webhook do provedor
+          (POST /v1/pagamentos/webhook) — não é editável aqui.
+        </Typography>
+      </Box>
+    </SimpleShowLayout>
+  </Show>
 )

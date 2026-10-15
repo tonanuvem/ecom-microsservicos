@@ -170,3 +170,64 @@ def test_reenvio_idempotente_nao_notifica_de_novo(limpar, publicadas):
     client.post("/v1/pagamentos/webhook", json=corpo)
     client.post("/v1/pagamentos/webhook", json=corpo)
     assert len(publicadas) == 1
+
+# ── Tela de pagamento no admin: leitura, sem escrita manual ──────────────────
+
+from jose import jwt
+from main import ALGORITHM, SECRET_KEY
+
+def cabecalho():
+    token = jwt.encode({"sub": "zz-teste", "role": "ADMIN"}, SECRET_KEY, algorithm=ALGORITHM)
+    return {"Authorization": f"Bearer {token}"}
+
+def test_obter_alimenta_a_tela_de_detalhe(limpar):
+    """getOne do recurso: tudo o que o Show mostra vem desta rota."""
+    pedido = f"zz-pedido-{uuid.uuid4()}"
+    limpar.append(pedido)
+    criado = client.post("/v1/pagamentos/webhook", json={
+        "idempotency_key": f"idem-{pedido}", "pedido_id": pedido,
+        "status": "APROVADO", "valor": 320.5, "referencia_ext": "EXT-123",
+    }).json()
+
+    resp = client.get(f"/v1/pagamentos/{criado['id']}", headers=cabecalho())
+    assert resp.status_code == 200
+    corpo = resp.json()
+    assert corpo["id"] == criado["id"]
+    assert corpo["pedido_id"] == pedido
+    assert corpo["status"] == "APROVADO"
+    assert corpo["valor"] == 320.5
+    assert corpo["referencia_ext"] == "EXT-123"
+    assert corpo["criado_em"]
+
+def test_obter_sem_token():
+    assert client.get("/v1/pagamentos/qualquer").status_code == 401
+
+def test_obter_inexistente():
+    resp = client.get("/v1/pagamentos/00000000-0000-0000-0000-000000000000",
+                      headers=cabecalho())
+    assert resp.status_code == 404
+
+def test_pagamento_nao_tem_escrita_manual(limpar):
+    """Pagamento nasce no provedor: sessão + webhook, com idempotência.
+
+    O admin tinha Create e Edit batendo em POST /v1/pagamentos e
+    PUT /v1/pagamentos/{id} — 405 depois de preencher o formulário. Criar à mão
+    inventaria cobrança que o provedor não reconhece (e pedido_id é único), e
+    editar deixaria o status divergir do pedido sem notificar ninguém. Hoje a
+    tela é só leitura; estes 405 são o contrato.
+    """
+    pedido = f"zz-pedido-{uuid.uuid4()}"
+    limpar.append(pedido)
+    criado = client.post("/v1/pagamentos/webhook", json={
+        "idempotency_key": f"idem-{pedido}", "pedido_id": pedido,
+        "status": "APROVADO", "valor": 10.0,
+    }).json()
+
+    assert client.post("/v1/pagamentos", json={"pedido_id": pedido, "valor": 1},
+                       headers=cabecalho()).status_code == 405
+    assert client.put(f"/v1/pagamentos/{criado['id']}", json={"status": "RECUSADO"},
+                      headers=cabecalho()).status_code == 405
+
+    db = SessionLocal()
+    assert db.query(Pagamento).filter(Pagamento.pedido_id == pedido).count() == 1
+    db.close()

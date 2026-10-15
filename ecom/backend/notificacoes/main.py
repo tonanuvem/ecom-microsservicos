@@ -85,6 +85,20 @@ def serializar(n: Notificacao) -> dict:
             "destinatario_nome": n.destinatario_nome, "status": n.status,
             "tentativas": n.tentativas, "criado_em": str(n.criado_em) if n.criado_em else None}
 
+@app.get("/v1/notificacoes/{notificacao_id}", tags=["notificacoes"])
+def obter(notificacao_id: str, request: Request, db: Session = Depends(get_db)):
+    """Uma notificação. É o getOne da tela de detalhe do admin.
+
+    Faltava: o admin tem tela de detalhe de notificação e o getOne batia em 404.
+    Devolve também o payload, que a listagem não traz — é o conteúdo do que foi
+    notificado (valor do pedido, status do pagamento).
+    """
+    exigir_auth(request)
+    n = db.query(Notificacao).filter(Notificacao.id == notificacao_id).first()
+    if not n:
+        raise HTTPException(status_code=404, detail="Notificação não encontrada")
+    return {**serializar(n), "payload": n.payload}
+
 @app.get("/v1/notificacoes", tags=["notificacoes"])
 def listar(request: Request, db: Session = Depends(get_db)):
     """Lista notificações. Aplica filter/sort/range do ra-data-simple-rest."""

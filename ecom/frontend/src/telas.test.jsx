@@ -1,11 +1,12 @@
 // Smoke tests das telas principais com um dataProvider falso em memória.
 // Garantem que Dashboard, lista/detalhe de Pedidos e catálogo de Produtos
 // montam e exibem os números derivados dos dados.
-import { render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { AdminContext, ResourceContextProvider } from 'react-admin'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import Dashboard from './components/Dashboard'
+import { PagamentoShow } from './resources/Pagamentos'
 import { PedidoList, PedidoShow } from './resources/Pedidos'
 import { ProdutoList } from './resources/Produtos'
 
@@ -53,7 +54,8 @@ const COLECOES = {
     { id: 'e2', produto_id: 'p2', quantidade: 40 },
     { id: 'e3', produto_id: 'p3', quantidade: 0 },
   ],
-  pagamentos:   [{ id: 'pg1', pedido_id: 'ped-confirmado-1', status: 'APROVADO', valor: 4299.7 }],
+  pagamentos:   [{ id: 'pg1', pedido_id: 'ped-confirmado-1', status: 'APROVADO', valor: 4299.7,
+                  referencia_ext: 'EXT-9f21', criado_em: `${hoje} 10:05:00.000000` }],
   notificacoes: [{ id: 'n1', tipo: 'PEDIDO_CONFIRMADO', status: 'ENVIADO', destinatario_email: 'ana@ecom.com' }],
 }
 
@@ -65,6 +67,17 @@ const listar = (recurso, filter = {}) => {
   return colecao.filter(p => p.ativo)
 }
 
+// As escritas que as telas usam são espiãs: o que importa nos testes é qual
+// rota do serviço a tela escolhe (PATCH de status, DELETE de cancelamento).
+const chamadas = {
+  atualizarStatusPedido: vi.fn(() => Promise.resolve({ data: { status: 'CONFIRMADO' } })),
+  delete: vi.fn(() => Promise.resolve({ data: {} })),
+  update: vi.fn(() => Promise.resolve({ data: {} })),
+  create: vi.fn(() => Promise.resolve({ data: {} })),
+}
+
+beforeEach(() => Object.values(chamadas).forEach(fn => fn.mockClear()))
+
 const dataProviderFalso = {
   getList:  (recurso, params = {}) => {
     const data = listar(recurso, params.filter)
@@ -73,11 +86,12 @@ const dataProviderFalso = {
   getOne:   (recurso, { id }) => Promise.resolve({ data: (COLECOES[recurso] || []).find(r => r.id === id) }),
   getMany:  (recurso, { ids }) => Promise.resolve({ data: (COLECOES[recurso] || []).filter(r => ids.includes(r.id)) }),
   getManyReference: () => Promise.resolve({ data: [], total: 0 }),
-  create: () => Promise.resolve({ data: {} }),
-  update: () => Promise.resolve({ data: {} }),
+  create: (...args) => chamadas.create(...args),
+  update: (...args) => chamadas.update(...args),
   updateMany: () => Promise.resolve({ data: [] }),
-  delete: () => Promise.resolve({ data: {} }),
+  delete: (...args) => chamadas.delete(...args),
   deleteMany: () => Promise.resolve({ data: [] }),
+  atualizarStatusPedido: (...args) => chamadas.atualizarStatusPedido(...args),
 }
 
 function montar(ui, { rota = '/' } = {}) {
@@ -171,5 +185,78 @@ describe('Produtos', () => {
     // O catálogo do admin pede incluir_inativos — a vitrine esconderia este item
     expect(await screen.findByText('Mousepad Descontinuado')).toBeInTheDocument()
     expect(screen.getByText('Inativo')).toBeInTheDocument()
+  })
+})
+
+/* As telas de escrita do admin precisam bater em rota que existe. Pedido muda
+   de status por PATCH .../status (e cancela por DELETE); pagamento é leitura,
+   porque nasce do provedor. Estes testes fixam essa escolha. */
+
+function montarDetalhePedido(id) {
+  return montar(
+    <Routes>
+      <Route path="/pedidos/:id/show" element={
+        <ResourceContextProvider value="pedidos"><PedidoShow /></ResourceContextProvider>
+      } />
+    </Routes>,
+    { rota: `/pedidos/${id}/show` },
+  )
+}
+
+describe('Ações de status do pedido', () => {
+  it('confirma o pedido pendente pela rota de status, sem PUT do recurso', async () => {
+    montarDetalhePedido('ped-pendente-1')
+
+    fireEvent.click(await screen.findByRole('button', { name: /marcar como confirmado/i }))
+
+    await waitFor(() => expect(chamadas.atualizarStatusPedido)
+      .toHaveBeenCalledWith('ped-pendente-1', 'CONFIRMADO'))
+    expect(chamadas.update).not.toHaveBeenCalled()
+  })
+
+  it('oferece a entrega — e só ela — para pedido confirmado', async () => {
+    montarDetalhePedido('ped-confirmado-1')
+
+    expect(await screen.findByRole('button', { name: /marcar como entregue/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /marcar como confirmado/i })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /cancelar pedido/i })).toBeInTheDocument()
+  })
+
+  it('cancela pelo DELETE do serviço, que é o que notifica o cliente', async () => {
+    montarDetalhePedido('ped-pendente-1')
+
+    fireEvent.click(await screen.findByRole('button', { name: /cancelar pedido/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /sim, cancelar/i }))
+
+    await waitFor(() => expect(chamadas.delete)
+      .toHaveBeenCalledWith('pedidos', expect.objectContaining({ id: 'ped-pendente-1' })))
+    expect(chamadas.atualizarStatusPedido).not.toHaveBeenCalled()
+  })
+
+  it('não oferece ação para pedido já cancelado', async () => {
+    montarDetalhePedido('ped-cancelado-1')
+
+    expect(await screen.findByText(/sem próximas ações/i)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /cancelar pedido/i })).not.toBeInTheDocument()
+  })
+})
+
+describe('Pagamentos', () => {
+  it('mostra o pagamento em leitura, sem caminho para editar', async () => {
+    montar(
+      <Routes>
+        <Route path="/pagamentos/:id/show" element={
+          <ResourceContextProvider value="pagamentos"><PagamentoShow /></ResourceContextProvider>
+        } />
+      </Routes>,
+      { rota: '/pagamentos/pg1/show' },
+    )
+
+    expect(await screen.findByText('EXT-9f21')).toBeInTheDocument()
+    expect(screen.getByText('APROVADO')).toBeInTheDocument()
+    expect(screen.getByText('R$ 4.299,70')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /editar|edit/i })).not.toBeInTheDocument()
+    // O caminho para o pedido cobrado continua à mão
+    expect(screen.getByRole('button', { name: /abrir pedido/i })).toBeInTheDocument()
   })
 })

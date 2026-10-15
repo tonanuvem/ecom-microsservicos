@@ -27,6 +27,16 @@ const dataProvider = {
   updateMany: (resource, params) => providers[resource]?.updateMany(resource, params) ?? Promise.reject(),
   delete:     (resource, params) => providers[resource]?.delete(resource, params)     ?? Promise.reject(`Recurso desconhecido: ${resource}`),
   deleteMany: (resource, params) => providers[resource]?.deleteMany(resource, params) ?? Promise.reject(),
+
+  // Fora do CRUD do react-admin: o status do pedido tem rota própria no
+  // serviço (PATCH /v1/pedidos/{id}/status), e não um PUT do recurso inteiro —
+  // usuario_id, itens e total são snapshot da compra. Chamado pela tela de
+  // detalhe de Pedidos via useDataProvider().
+  atualizarStatusPedido: (id, status) =>
+    httpClient(`${SERVICES.pedidos.base}/v1/pedidos/${id}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status }),
+    }).then(({ json }) => ({ data: json })),
 }
 
 export default dataProvider

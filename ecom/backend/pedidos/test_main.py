@@ -128,3 +128,64 @@ def test_cancelamento_vale_mesmo_sem_notificacao(monkeypatch, pedidos):
     db = SessionLocal()
     assert db.query(Pedido).filter(Pedido.id == alvo).first().status == "CANCELADO"
     db.close()
+
+# ── Escrita de pedido pelo admin: só o status ────────────────────────────────
+
+def status_no_banco(pedido_id):
+    db = SessionLocal()
+    atual = db.query(Pedido).filter(Pedido.id == pedido_id).first().status
+    db.close()
+    return atual
+
+def test_patch_status_confirma_o_pedido(pedidos):
+    """É o que a tela de detalhe chama no botão "Marcar como confirmado"."""
+    alvo = pedidos[0]
+    resp = client.patch(f"/v1/pedidos/{alvo}/status", json={"status": "CONFIRMADO"},
+                        headers=cabecalho())
+    assert resp.status_code == 200
+    assert resp.json() == {"id": alvo, "status": "CONFIRMADO"}
+    assert status_no_banco(alvo) == "CONFIRMADO"
+
+def test_patch_status_entrega_pedido_confirmado(pedidos):
+    alvo = pedidos[1]
+    assert client.patch(f"/v1/pedidos/{alvo}/status", json={"status": "ENTREGUE"},
+                        headers=cabecalho()).status_code == 200
+    assert status_no_banco(alvo) == "ENTREGUE"
+
+def test_patch_status_recusa_valor_desconhecido(pedidos):
+    """Antes qualquer string entrava no banco e a tela mostrava status cinza."""
+    alvo = pedidos[0]
+    resp = client.patch(f"/v1/pedidos/{alvo}/status", json={"status": "ENVIADO"},
+                        headers=cabecalho())
+    assert resp.status_code == 422
+    assert status_no_banco(alvo) == "PENDENTE"
+
+def test_patch_status_nao_cancela_pedido(pedidos):
+    """Cancelar é o DELETE — é ele que publica PEDIDO_CANCELADO.
+
+    Se o PATCH aceitasse CANCELADO, o admin cancelaria sem o cliente saber.
+    """
+    alvo = pedidos[0]
+    resp = client.patch(f"/v1/pedidos/{alvo}/status", json={"status": "CANCELADO"},
+                        headers=cabecalho())
+    assert resp.status_code == 422
+    assert status_no_banco(alvo) == "PENDENTE"
+
+def test_patch_status_sem_token(pedidos):
+    assert client.patch(f"/v1/pedidos/{pedidos[0]}/status",
+                        json={"status": "CONFIRMADO"}).status_code == 401
+
+def test_patch_status_de_pedido_inexistente():
+    resp = client.patch("/v1/pedidos/00000000-0000-0000-0000-000000000000/status",
+                        json={"status": "CONFIRMADO"}, headers=cabecalho())
+    assert resp.status_code == 404
+
+def test_pedido_nao_tem_edicao_completa(pedidos):
+    """O admin não edita pedido: usuario_id, itens e total são o snapshot da compra.
+
+    A tela antiga tinha <Edit> (PUT /v1/pedidos/{id}) e o usuário tomava 405
+    depois de preencher o formulário; hoje a tela de detalhe só muda status.
+    """
+    resp = client.put(f"/v1/pedidos/{pedidos[0]}",
+                      json={"status": "CONFIRMADO", "total": 1}, headers=cabecalho())
+    assert resp.status_code == 405

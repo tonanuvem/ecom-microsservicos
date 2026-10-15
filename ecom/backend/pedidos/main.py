@@ -1,6 +1,6 @@
 import os, uuid
 from datetime import datetime
-from typing import Optional, List
+from typing import Literal, Optional, List
 
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -51,6 +51,12 @@ class ItemIn(BaseModel):
 
 class PedidoCreate(BaseModel):
     itens: List[ItemIn]
+
+# Status que a operação aplica diretamente. CANCELADO fica de fora de propósito:
+# cancelar é o DELETE /v1/pedidos/{id}, que é quem publica PEDIDO_CANCELADO —
+# um PATCH para CANCELADO mudaria o pedido sem avisar o cliente.
+class StatusUpdate(BaseModel):
+    status: Literal["PENDENTE", "CONFIRMADO", "ENTREGUE"]
 
 def exigir_auth(request: Request):
     auth = request.headers.get("authorization", "")
@@ -139,13 +145,20 @@ def cancelar(pedido_id: str, request: Request, db: Session = Depends(get_db)):
     return {"id": pedido_id, "status": "CANCELADO"}
 
 @app.patch("/v1/pedidos/{pedido_id}/status", tags=["pedidos"])
-def atualizar_status(pedido_id: str, body: dict, request: Request, db: Session = Depends(get_db)):
-    """Atualiza status do pedido (chamado internamente pelo serviço de pagamentos)."""
+def atualizar_status(pedido_id: str, body: StatusUpdate, request: Request, db: Session = Depends(get_db)):
+    """Avança o status do pedido. Usado pelo fluxo de pagamento e pelo admin.
+
+    É a única escrita de pedido já existente — não há PUT /v1/pedidos/{id}:
+    usuario_id, itens e total são o snapshot da compra e não se editam. A tela
+    de detalhe do admin chama esta rota para confirmar/entregar e o DELETE para
+    cancelar; o Literal de StatusUpdate recusa (422) qualquer outro valor, que
+    antes entrava no banco e aparecia como status desconhecido na tela.
+    """
     exigir_auth(request)
     p = db.query(Pedido).filter(Pedido.id == pedido_id).first()
     if not p:
         raise HTTPException(status_code=404, detail="Pedido não encontrado")
-    p.status = body.get("status", p.status)
+    p.status = body.status
     db.commit()
     return {"id": pedido_id, "status": p.status}
 

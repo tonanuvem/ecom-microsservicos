@@ -9,6 +9,7 @@ import ReceiptLongIcon from '@mui/icons-material/ReceiptLong'
 import Alert from '@mui/material/Alert'
 import Avatar from '@mui/material/Avatar'
 import Box from '@mui/material/Box'
+import Button from '@mui/material/Button'
 import Card from '@mui/material/Card'
 import CardContent from '@mui/material/CardContent'
 import Chip from '@mui/material/Chip'
@@ -24,9 +25,8 @@ import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import { useMemo, useState } from 'react'
 import {
-  Create, Datagrid, Edit, EditButton, List, NumberInput, Show,
-  SimpleForm, TextInput, TopToolbar, useGetList, useListContext,
-  useRecordContext, useRedirect,
+  Confirm, Datagrid, List, Show, TopToolbar, useDataProvider, useGetList,
+  useListContext, useNotify, useRecordContext, useRedirect, useRefresh,
 } from 'react-admin'
 import { BarraFiltros, ListaLocal } from '../components/comuns'
 import { brl, formatarData, tempoRelativo } from '../formatos'
@@ -311,9 +311,108 @@ function exportarPedidos(pedidos) {
 
 /* ------------------------------- Detalhe -------------------------------- */
 
-const ShowActions = () => (
-  <TopToolbar><EditButton /></TopToolbar>
-)
+/* ---------------------------- Ações de status ---------------------------- */
+
+// O pedido não tem formulário de edição, e isso é uma decisão de modelo, não
+// uma tela faltando: usuario_id, itens e total são o snapshot da compra (o
+// total vem da soma dos itens no POST /v1/pedidos) e o status é o único campo
+// que a operação mexe depois. O serviço expõe exatamente isso — PATCH
+// /v1/pedidos/{id}/status para avançar e DELETE /v1/pedidos/{id} para cancelar,
+// que é o único caminho que publica PEDIDO_CANCELADO. O <Edit> que existia aqui
+// fazia PUT /v1/pedidos/{id}: rota inexistente (405 depois de preencher o
+// formulário) e, se existisse, deixaria o total divergir dos itens e o dono do
+// pedido ser trocado por digitação.
+const PROXIMOS_STATUS = {
+  PENDENTE:   ['CONFIRMADO'],
+  CONFIRMADO: ['ENTREGUE'],
+}
+
+const CANCELAVEIS = ['PENDENTE', 'CONFIRMADO']
+
+const ShowActions = () => {
+  const record       = useRecordContext()
+  const dataProvider = useDataProvider()
+  const notify       = useNotify()
+  const refresh      = useRefresh()
+  const [emCurso, setEmCurso]     = useState(null)
+  const [confirmando, setConfirmando] = useState(false)
+
+  if (!record) return null
+
+  const avancar = async (status) => {
+    setEmCurso(status)
+    try {
+      await dataProvider.atualizarStatusPedido(record.id, status)
+      notify(`Pedido marcado como ${meta(status).label.toLowerCase()}.`, { type: 'info' })
+      refresh()
+    } catch (e) {
+      notify(e?.message || 'Não foi possível mudar o status do pedido.', { type: 'warning' })
+    } finally {
+      setEmCurso(null)
+    }
+  }
+
+  // Cancelar é o DELETE do serviço: marca CANCELADO e notifica o cliente. O
+  // pedido continua na listagem — nada é apagado.
+  const cancelar = async () => {
+    setConfirmando(false)
+    setEmCurso('CANCELADO')
+    try {
+      await dataProvider.delete('pedidos', { id: record.id, previousData: record })
+      notify('Pedido cancelado — o cliente foi notificado.', { type: 'info' })
+      refresh()
+    } catch (e) {
+      notify(e?.message || 'Não foi possível cancelar o pedido.', { type: 'warning' })
+    } finally {
+      setEmCurso(null)
+    }
+  }
+
+  const proximos  = PROXIMOS_STATUS[record.status] || []
+  const cancelavel = CANCELAVEIS.includes(record.status)
+
+  return (
+    <TopToolbar>
+      {proximos.map(status => (
+        <Button
+          key={status}
+          size="small"
+          variant="contained"
+          disabled={!!emCurso}
+          startIcon={STATUS_META[status]?.icone}
+          onClick={() => avancar(status)}
+        >
+          Marcar como {meta(status).label.toLowerCase()}
+        </Button>
+      ))}
+      {cancelavel && (
+        <Button
+          size="small"
+          color="error"
+          disabled={!!emCurso}
+          startIcon={<BlockIcon />}
+          onClick={() => setConfirmando(true)}
+        >
+          Cancelar pedido
+        </Button>
+      )}
+      {!proximos.length && !cancelavel && (
+        <Typography variant="body2" color="text.secondary">
+          Pedido {meta(record.status).label.toLowerCase()} — sem próximas ações.
+        </Typography>
+      )}
+      <Confirm
+        isOpen={confirmando}
+        title="Cancelar pedido"
+        content="O pedido fica com status CANCELADO e o cliente recebe a notificação. Não há como desfazer pela tela."
+        confirm="Sim, cancelar"
+        cancel="Voltar"
+        onConfirm={cancelar}
+        onClose={() => setConfirmando(false)}
+      />
+    </TopToolbar>
+  )
+}
 
 const PedidoDetalhe = () => {
   const record   = useRecordContext()
@@ -432,22 +531,8 @@ export const PedidoShow = () => (
   </Show>
 )
 
-export const PedidoCreate = () => (
-  <Create redirect="list">
-    <SimpleForm>
-      <TextInput source="usuario_id" label="ID do Usuário" required fullWidth />
-      <NumberInput source="total" label="Total (R$)" required min={0} />
-      <TextInput source="status" label="Status" defaultValue="PENDENTE" disabled />
-    </SimpleForm>
-  </Create>
-)
-
-export const PedidoEdit = () => (
-  <Edit redirect="show">
-    <SimpleForm>
-      <TextInput source="usuario_id" label="ID do Usuário" fullWidth />
-      <NumberInput source="total" label="Total (R$)" min={0} />
-      <TextInput source="status" label="Status" helperText="PENDENTE · CONFIRMADO · CANCELADO · ENTREGUE" />
-    </SimpleForm>
-  </Edit>
-)
+// Sem tela de criação de pedido no admin: o POST /v1/pedidos tira o dono do
+// token e espera a lista de itens, então o ADMIN criaria um pedido em nome dele
+// mesmo — e o formulário que existia aqui mandava usuario_id/total/status, que
+// o serviço nem aceita. Pedido é feito pelo cliente na loja (ou pelo
+// scripts/seed.sh, em aula).

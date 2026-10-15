@@ -89,3 +89,31 @@ def test_docs_resolve_o_spec_por_url_relativa():
     html = client.get("/docs").text
     assert html.index('"url": "openapi.json"') > html.index("url: '/openapi.json'")
     assert client.get("/openapi.json").json()["openapi"].startswith("3.")
+
+# ── Detalhe da notificação (getOne da tela do admin) ─────────────────────────
+
+def test_obter_devolve_payload_do_que_foi_notificado(fila):
+    """A tela de detalhe existia e o getOne batia em 404: faltava a rota."""
+    _, ids = fila
+    db = SessionLocal()
+    n = db.query(Notificacao).filter(Notificacao.id == ids[0]).first()
+    n.payload = {"pedido_id": "ped-1", "valor": 99.9}
+    db.commit()
+    db.close()
+
+    resp = client.get(f"/v1/notificacoes/{ids[0]}", headers=cabecalho())
+    assert resp.status_code == 200
+    corpo = resp.json()
+    assert corpo["id"] == ids[0]
+    assert corpo["tipo"] == "PEDIDO_CONFIRMADO"
+    assert corpo["status"] == "ENVIADO"
+    assert corpo["payload"] == {"pedido_id": "ped-1", "valor": 99.9}
+
+def test_obter_sem_token(fila):
+    _, ids = fila
+    assert client.get(f"/v1/notificacoes/{ids[0]}").status_code == 401
+
+def test_obter_inexistente():
+    resp = client.get("/v1/notificacoes/00000000-0000-0000-0000-000000000000",
+                      headers=cabecalho())
+    assert resp.status_code == 404
